@@ -5,299 +5,543 @@ arg2 equ 6
 arg3 equ 8
 arg4 equ 10
 
+var1 equ -2
+var2 equ -4
+var3 equ -6
+var4 equ -8
+
 stack segment para stack
-    db 1024 dup(0)
+    db 1024 dup(?)
 stack ends
 
 data segment para public
-    ; Буферы для ввода и обработки
     str_input    db 128 dup(0)
     str_val1     db 64 dup(0)
     str_val2     db 64 dup(0)
-    char_op      db 0
+    str_res      db 64 dup(0)
     
+    char_op      db 0
     num_a        dw 0
     num_b        dw 0
     res_low      dw 0
     res_high     dw 0
     current_base dw 10
-
-    ; Сообщения
+    atoi_error   db 0
+    
     msg_base     db "Select number system (d/h): ", 0
-    msg_input    db "Enter expression (e.g. 10 + 5): ", 0
+    msg_input    db "Enter expression (e.g. 10 - 5): ", 0
     msg_res_dec  db "Result (Decimal): ", 0
     msg_res_hex  db "Result (Hex): 0x", 0
-
-    ; Ошибки
-    err_fmt      db "Error: Invalid format", 0
-    err_op       db "Error: Unknown operation", 0
-    err_div      db "Error: Division by zero", 0
-    err_base     db "Error: Invalid base", 0
+    
+    msg_err      db "Error: ", 0
+    err_fmt      db "Invalid format", 0
+    err_op       db "Unknown operation", 0
+    err_div      db "Division by zero", 0
+    err_range_str db "Out of range", 0
+    err_overflow  db "Overflow", 0
 data ends
+
 
 code segment para public use16
 assume cs:code, ds:data, ss:stack
 
+; --- Вывод символа ---
 _putchar:
     push bp
     mov bp, sp
-    mov dx, [bp+arg1]
+    mov dx, word ptr [bp + arg1]
     mov ah, 02h
     int 21h
+    mov sp, bp
     pop bp
     ret
 
-_putstr:
+; --- Ввод символа ---
+_getchar:
     push bp
     mov bp, sp
-    mov si, [bp+arg1]
-put_loop:
-    lodsb
-    cmp al, 0
-    je put_done
-    mov dl, al
-    mov ah, 02h
+    mov ah, 01h
     int 21h
-    jmp put_loop
-put_done:
+    mov sp, bp
     pop bp
     ret
 
-_putnewline:
-    push 10
-    call _putchar
-    push 13
-    call _putchar
-    add sp, 4
+; --- Длина строки ---
+_strlen: 
+    push bp
+    mov bp, sp
+    mov bx, word ptr [bp + arg1] 
+    xor ax, ax
+lencyc:    
+    cmp byte ptr [bx], 0
+    je lenret
+    inc ax
+    inc bx
+    jmp lencyc
+lenret:    
+    mov sp, bp
+    pop bp
     ret
 
-_atoi:
+; --- Вывод строки ---
+_putstr: 
+    push bp
+    mov bp, sp
+    push word ptr [bp + arg1] 
+    call _strlen
+    add sp, 2
+    mov cx, ax
+    mov dx, word ptr [bp + arg1]
+    mov ah, 40h
+    mov bx, 1
+    int 21h
+    mov sp, bp
+    pop bp
+    ret
+
+; --- Чтение строки ---
+_getstr:
+    push bp
+    mov bp, sp
+    mov cx, word ptr [bp + arg2]
+    mov dx, word ptr [bp + arg1]
+    mov ah, 3fh
+    mov bx, 0
+    int 21h
+    
+    mov bx, word ptr [bp + arg1]
+    add bx, ax
+    
+    cmp ax, 2
+    jb getstr_small
+    sub bx, 2
+    jmp getstr_zero
+    
+getstr_small:
+    test ax, ax
+    jz getstr_zero
+    sub bx, 1
+    
+getstr_zero:
+    mov byte ptr [bx], 0
+    
+    mov sp, bp
+    pop bp
+    ret
+
+; --- Новая строка ---
+_putnewline:
+    push bp
+    mov bp, sp
+    mov dx, 10
+    push dx
+    call _putchar
+    add sp, 2
+    mov dx, 13
+    push dx
+    call _putchar
+    add sp, 2
+    mov sp, bp
+    pop bp
+    ret
+
+_exit:
+    push bp
+    mov bp, sp
+    mov ax, word ptr [bp + arg1]
+    mov ah, 4ch
+    int 21h
+    mov sp, bp
+    pop bp
+    ret
+
+_exit0:
+    push bp
+    mov bp, sp
+    mov dx, 0
+    push dx
+    call _exit
+    add sp, 2
+    mov sp, bp
+    pop bp
+    ret
+
+
+; --- atoi: строка -> signed word ---
+_atoi: 
     push bp
     mov bp, sp
     push si
+    push di
     push bx
-    
-    mov si, [bp+arg1]
-    mov bx, [bp+arg2]
-    xor eax, eax
+    push cx
+
+    mov atoi_error, 0
+
+    mov si, word ptr [bp + arg1]
+    mov bx, current_base
+    xor ax, ax
     xor cx, cx
 
     cmp byte ptr [si], '-'
-    jne atoi_c
+    jne atoi_loop
     mov cx, 1
     inc si
-atoi_c:
-    movzx edx, byte ptr [si]
+
+atoi_loop:
+    xor dx, dx
+    mov dl, [si]
     test dl, dl
-    je atoi_e
+    jz atoi_end
+
     cmp dl, '0'
     jb atoi_err
     cmp dl, '9'
-    jbe is_d
+    jbe atoi_digit
+
+    cmp bx, 16
+    jne atoi_err
     and dl, 0DFh
+    cmp dl, 'A'
+    jb atoi_err
+    cmp dl, 'F'
+    ja atoi_err
     sub dl, 7
-is_d:
+
+atoi_digit:
     sub dl, '0'
-    movzx ebx, word ptr [bp+arg2]
-    imul eax, ebx
-    movzx edx, dl
-    add eax, edx
+    mov di, dx
+
+    mul bx
+    test dx, dx
+    jnz atoi_range_err
+
+    add ax, di
+    jc atoi_range_err
+
     inc si
-    jmp atoi_c
-atoi_e:
-    test cx, cx
-    jz atoi_check
-    neg eax
-atoi_check:
-    cmp eax, 32767
-    jg atoi_err
-    cmp eax, -32768
-    jl atoi_err
-    clc
-    jmp atoi_r
+    jmp atoi_loop
+
 atoi_err:
-    stc
-atoi_r:
+    mov atoi_error, 1
+    xor ax, ax
+    jmp atoi_ret
+
+atoi_range_err:
+    mov atoi_error, 2
+    xor ax, ax
+    jmp atoi_ret
+
+atoi_end:
+    test cx, cx
+    jz atoi_pos_check
+
+    cmp ax, 8000h
+    ja atoi_range_err
+    neg ax
+    jmp atoi_ok
+
+atoi_pos_check:
+    cmp ax, 7FFFh
+    ja atoi_range_err
+
+atoi_ok:
+
+atoi_ret:
+    pop cx
     pop bx
+    pop di
     pop si
+    mov sp, bp
     pop bp
     ret
 
+
+; --- Печать 32-битного знакового DX:AX в десятичной ---
 _itoa32_dec:
     push bp
     mov bp, sp
+    sub sp, 2
     push di
     push si
     push bx
 
-    mov dx, [bp+arg1]
-    mov ax, [bp+arg2]
-    mov di, [bp+arg3]
+    mov dx, word ptr [bp + arg1]
+    mov ax, word ptr [bp + arg2]
+    mov di, word ptr [bp + arg3]
 
     test dx, 8000h
     jz i32_pos
+
     mov byte ptr [di], '-'
     inc di
     not dx
     not ax
     add ax, 1
     adc dx, 0
+
 i32_pos:
     xor cx, cx
     mov si, 10
-i32_lp:
+
+i32_loop:
     mov bx, ax
     mov ax, dx
     xor dx, dx
     div si
-    mov bp, ax 
+    mov [bp - 2], ax
+
     mov ax, bx
     div si
     add dl, '0'
     push dx
     inc cx
-    mov dx, bp
+
+    mov dx, [bp - 2]
     mov bx, dx
     or bx, ax
-    jnz i32_lp
+    jnz i32_loop
+
 i32_pop:
     pop ax
-    stosb
+    mov [di], al
+    inc di
     loop i32_pop
+
     mov byte ptr [di], 0
+
     pop bx
     pop si
     pop di
+    mov sp, bp
     pop bp
     ret
 
-_itoa16:
+
+; --- Печать 32-битного DX:AX в hex ---
+_itoa32_hex:
     push bp
     mov bp, sp
     push di
-    push si
     push bx
+    push cx
+
+    mov di, word ptr [bp + arg3]
     
-    mov di, [bp+arg3]
-    
-    mov bx, [bp+arg1] 
-    call hex_word_to_str
-    
-    mov bx, [bp+arg2]
-    call hex_word_to_str
+    mov bx, word ptr [bp + arg1]
+    call hex_word
+    mov bx, word ptr [bp + arg2]
+    call hex_word
     
     mov byte ptr [di], 0
-    
+
+    pop cx
     pop bx
-    pop si
     pop di
+    mov sp, bp
     pop bp
     ret
-	
-hex_word_to_str:
+
+hex_word:
     mov cx, 4
-hex_word_loop:
-    rol bx, 4 
+hw_loop:
+    rol bx, 4
     mov al, bl
     and al, 0Fh
     cmp al, 9
-    jbe hex_digit_ok
+    jbe hw_digit
     add al, 7
-hex_digit_ok:
+hw_digit:
     add al, '0'
     mov [di], al
     inc di
-    loop hex_word_loop
+    loop hw_loop
     ret
-	
-_calc:
+
+
+; --- ПАРСЕР ВЫРАЖЕНИЯ ---
+_check:
+    push bp
+    mov bp, sp
+    push si
+    push di
+    push cx
+
+    mov si, word ptr [bp + arg1]
+
+chk_skip1:
+    mov al, [si]
+    cmp al, ' '
+    jne chk_read_v1
+    inc si
+    jmp chk_skip1
+
+chk_read_v1:
+    mov di, offset str_val1
+    xor cx, cx
+
+chk_v1_loop:
+    mov al, [si]
+    test al, al
+    jz chk_err
+
+    cmp al, '-'
+    jne chk_v1_not_minus
+    test cx, cx
+    jz chk_v1_copy
+    jmp chk_v1_check_op
+
+chk_v1_not_minus:
+    cmp al, '+'
+    je chk_v1_check_op
+    cmp al, '*'
+    je chk_v1_check_op
+    cmp al, '/'
+    je chk_v1_check_op
+    cmp al, '%'
+    je chk_v1_check_op
+
+    cmp al, ' '
+    je chk_v1_space_end
+
+chk_v1_copy:
+    mov [di], al
+    inc di
+    inc si
+    inc cx
+    jmp chk_v1_loop
+
+chk_v1_check_op:
+    test cx, cx
+    jz chk_err
+    mov byte ptr [di], 0
+    jmp chk_read_op
+
+chk_v1_space_end:
+    mov byte ptr [di], 0
+    test cx, cx
+    jz chk_err
+
+chk_skip2:
+    inc si
+    mov al, [si]
+    cmp al, ' '
+    je chk_skip2
+
+chk_read_op:
+    mov al, [si]
+    
+    cmp al, '+'
+    je chk_op_ok
+    cmp al, '-'
+    je chk_op_ok
+    cmp al, '*'
+    je chk_op_ok
+    cmp al, '/'
+    je chk_op_ok
+    cmp al, '%'
+    je chk_op_ok
+    jmp chk_err
+
+chk_op_ok:
+    mov char_op, al
+    inc si
+
+chk_skip3:
+    mov al, [si]
+    cmp al, ' '
+    jne chk_read_v2
+    inc si
+    jmp chk_skip3
+
+chk_read_v2:
+    mov di, offset str_val2
+
+chk_v2_loop:
+    mov al, [si]
+    test al, al
+    jz chk_v2_done
+    cmp al, ' '
+    je chk_v2_done
+    cmp al, 13
+    je chk_v2_done
+    cmp al, 10
+    je chk_v2_done
+    
+    mov [di], al
+    inc di
+    inc si
+    jmp chk_v2_loop
+
+chk_v2_done:
+    mov byte ptr [di], 0
+    
+    cmp di, offset str_val2
+    je chk_err
+    
+    clc
+    jmp chk_ret
+
+chk_err:
+    stc
+
+chk_ret:
+    pop cx
+    pop di
+    pop si
+    mov sp, bp
+    pop bp
+    ret
+
+
+; --- ОСНОВНАЯ ФУНКЦИЯ CALC ---
+_calc: 
     push bp
     mov bp, sp
 
-    ;Выбор системы счисления
     push offset msg_base
     call _putstr
     add sp, 2
+
+    call _getchar
+    mov cl, al              
     
-    mov ah, 01h
-    int 21h
-    mov bl, al
     call _putnewline
 
-    cmp bl, 'd'
-    je set_dec
-    cmp bl, 'h'
-    je set_hex
-    push offset err_base
-    call _putstr
-    jmp calc_exit
-set_dec:
     mov current_base, 10
-    jmp get_input
-set_hex:
+    cmp cl, 'h'
+    jne ask_expr
     mov current_base, 16
 
-get_input:
+ask_expr:
     push offset msg_input
     call _putstr
     add sp, 2
-    
-    mov dx, offset str_input
-    mov ah, 3Fh
-    mov bx, 0
-    mov cx, 120
-    int 21h
-    
-    mov si, offset str_input
-    add si, ax
-    sub si, 2
-    mov byte ptr [si], 0
 
-    mov si, offset str_input
-    mov di, offset str_val1
-    cld
-    
-scan_val1:
-    lodsb
-    cmp al, ' '
-    je end_val1
-    cmp al, 0
-    je error_fmt
-    stosb
-    jmp scan_val1
-end_val1:
-    mov byte ptr [di], 0
+    push 120
+    push offset str_input
+    call _getstr
+    add sp, 4
 
-    lodsb
-    mov char_op, al
-    
-    lodsb
-    cmp al, ' '
-    jne error_fmt
+    push offset str_input
+    call _check
+    add sp, 2
+    jc err_format
 
-    mov di, offset str_val2
-scan_val2:
-    lodsb
-    stosb
-    cmp al, 0
-    jne scan_val2
-
-    ; Превращаем строки в числа
-    push current_base
     push offset str_val1
     call _atoi
-    add sp, 4
-    jc error_fmt
+    add sp, 2
+    cmp atoi_error, 0
+    jne err_out_range
     mov num_a, ax
 
-    push current_base
     push offset str_val2
     call _atoi
-    add sp, 4
-    jc error_fmt
+    add sp, 2
+    cmp atoi_error, 0
+    jne err_out_range
     mov num_b, ax
 
-    ; Вычисления
     mov ax, num_a
     mov bx, num_b
     mov cl, char_op
@@ -312,97 +556,136 @@ scan_val2:
     je do_div
     cmp cl, '%'
     je do_mod
-    
+
     push offset err_op
     call _putstr
-    jmp calc_exit
+    add sp, 2
+    jmp calc_done
 
 do_add:
     add ax, bx
-    cwd
-    jmp print_res
-do_sub:
-    sub ax, bx
-    cwd
-    jmp print_res
-do_mul:
-    imul bx
-    jmp print_res
-do_div:
-    test bx, bx
-    jz error_div
-    cwd
-    idiv bx  
-    cwd
-    jmp print_res
-do_mod:
-    test bx, bx
-    jz error_div
-    cwd
-    idiv bx
-    mov ax, dx 
+    jo err_overflow_handler
     cwd
     jmp print_res
 
-error_fmt:
-    push offset err_fmt
-    call _putstr
-    jmp calc_exit
-error_div:
-    push offset err_div
-    call _putstr
-    jmp calc_exit
+do_sub:
+    sub ax, bx
+    jo err_overflow_handler
+    cwd
+    jmp print_res
+
+do_mul:
+    imul bx                     ; DX:AX = AX * BX (полный 32-битный результат)
+    jmp print_res               ; без проверки OF — выводим всё DX:AX
+
+do_div:
+    test bx, bx
+    jz err_divide
+    cwd
+    idiv bx
+    cwd
+    jmp print_res
+
+do_mod:
+    test bx, bx
+    jz err_divide
+    cwd
+    idiv bx
+    mov ax, dx
+    cwd
+    jmp print_res
+
 
 print_res:
     mov res_low, ax
     mov res_high, dx
 
     call _putnewline
-    
-    ; Decimal Output
+
     push offset msg_res_dec
     call _putstr
     add sp, 2
-    
-    push offset str_input 
-    push res_low          
-    push res_high       
+
+    push offset str_res
+    push res_low
+    push res_high
     call _itoa32_dec
     add sp, 6
-    
-    push offset str_input
+
+    push offset str_res
     call _putstr
     add sp, 2
     call _putnewline
 
-    ; Hexadecimal Output
     push offset msg_res_hex
     call _putstr
     add sp, 2
-    
-    push offset str_input
-    push res_low         
-    push res_high 
-    call _itoa16
+
+    push offset str_res
+    push res_low
+    push res_high
+    call _itoa32_hex
     add sp, 6
-    
-    push offset str_input
+
+    push offset str_res
+    call _putstr
+    add sp, 2
+    call _putnewline
+    jmp calc_done
+
+err_format:
+    push offset msg_err
+    call _putstr
+    add sp, 2
+    push offset err_fmt
+    call _putstr
+    add sp, 2
+    call _putnewline
+    jmp calc_done
+
+err_out_range:
+    push offset msg_err
+    call _putstr
+    add sp, 2
+    push offset err_range_str
+    call _putstr
+    add sp, 2
+    call _putnewline
+    jmp calc_done
+
+err_overflow_handler:
+    push offset msg_err
+    call _putstr
+    add sp, 2
+    push offset err_overflow
+    call _putstr
+    add sp, 2
+    call _putnewline
+    jmp calc_done
+
+err_divide:
+    push offset msg_err
+    call _putstr
+    add sp, 2
+    push offset err_div
     call _putstr
     add sp, 2
     call _putnewline
 
-calc_exit:
+calc_done:
+    mov sp, bp
     pop bp
     ret
 
 start:
     mov ax, data
     mov ds, ax
-    mov es, ax
+    mov ax, stack
+    mov ss, ax
     
     call _calc
-    
-    mov ax, 4C00h
-    int 21h
+
+    call _exit0
 code ends
+
 end start
